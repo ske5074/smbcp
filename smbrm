@@ -1,0 +1,115 @@
+#!/bin/sh
+###
+#   Copyright 2008 Sean Kennedy, University of Denver, sean@du.edu
+#   This program is free software: you can redistribute it and/or modify#   it under the terms of the GNU General Public License as published by#   the Free Software Foundation, either version 3 of the License, or#   (at your option) any later version.##   This program is distributed in the hope that it will be useful,#   but WITHOUT ANY WARRANTY; without even the implied warranty of#   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the#   GNU General Public License for more details.##   You should have received a copy of the GNU General Public License#   along with this program.  If not, see <http://www.gnu.org/licenses/>.
+###
+#
+# 20070501 - Initial build
+# 20071025 - Updated /tmp/.smbrm-$$.out to /tmp/.smbrm-$DT-$$.out
+# 20071025 - Added a PATH statement.
+
+PATH=/usr/bin:/bin:/usr/local/bin:/usr/sfw/bin:/opt/sfw/bin
+DT=`date +'%Y%m%d%H%M'`
+TMPFILE="/tmp/.smbrm-$DT-$$.out"
+
+f_usage()
+{
+   echo "Usage:"
+   echo "   smbrm {-v} {username}[%password]@{hostname}:{filename}"
+   echo "      -v  = Verbose output."
+   echo "      The var SMBPASSWD can be used for the password."
+   echo "      Example:"
+   echo "         smbrm cair/bob.barker@winnt:/share/wow.txt"
+}
+
+# Parse the command-line options...
+while getopts 'I:vh' option
+do
+   case "$option" in
+   "I")	opt_I="$OPTARG"
+        ;;
+   "v")	opt_v="1"
+        ;;
+   "h") f_usage
+        exit 1
+        ;;
+   ?)	echo "`basename $0`: Bad option -${option} specified. Aborting."
+        exit 1
+        ;;
+   esac
+done
+shift `expr $OPTIND - 1`
+
+if [ "$#" -ne 1 ]; then
+   f_usage
+   exit 1
+fi
+
+RESULT=`echo "$1" | grep ":"`
+if [ "$?" -ne 0 ]; then
+   # The argument must be a network location. Abort...
+   echo "Error: $1 is not a network path."
+   f_usage
+   exit 1
+fi
+
+# Parse all the network information...
+NETUSER=`echo "$1" | cut -d "@" -f1`
+NETHOST=`echo "$1" | cut -d "@" -f2 | cut -d":" -f1`
+NETSHARE=`echo "$1" | cut -d ":" -f2 | cut -d "/" -f2`
+NETDIR=/`echo "$1" | cut -d ":" -f2 | cut -d "/" -f 3-`
+NETFILE=`basename "$NETDIR"`
+NETDIR=`dirname "$NETDIR"`
+
+# Check for a passwd...
+RESULT=`echo "$NETUSER" | grep "%"`
+if [ "$?" -eq 0 ]; then
+   # There's a password in the username. Process...
+   NETPASSWD=`echo "$NETUSER" | cut -d "%" -f2`
+   NETUSER=`echo "$NETUSER" | cut -d "%" -f1`
+else
+   # There's no password in the username - see if a SMBPASSWD var exists...
+   if [ ! -z "$SMBPASSWD" ]; then
+      # SMBPASSWD exists. Set the source passwd to it...
+      NETPASSWD="$SMBPASSWD"
+   else
+      # So there's no password on the command line and
+      # no SMBPASSWD defined.  Check for a global passwd for the user...
+      PASSWDFILE=`echo "$NETUSER" | tr '\\\/' '__'`
+      NETPASSWD=`crypt qmwnebrv42 < "/etc/.smb.$PASSWDFILE" 2> /dev/null`
+   fi
+fi
+
+# echo USER - $NETUSER
+# echo PASSWD - $NETPASSWD
+# echo HOST - $NETHOST
+# echo SHARE - $NETSHARE
+# echo DIR - $NETDIR
+# echo FILE - $NETFILE
+
+# Process the request. 
+USER="$NETUSER%$NETPASSWD" ; export USER
+
+# Execute the smbclient command...
+smbclient "//$NETHOST/$NETSHARE" \
+   -D "$NETDIR"  \
+   -U "$NETUSER" \
+   -N \
+   -c "prompt; del $NETFILE" > $TMPFILE 2>&1
+
+# Now check to see of the command ran successfully...
+ERRORLEVEL=$?
+if [ $ERRORLEVEL -ne 0 ]; then
+   # Something's wrong...
+   echo "Error: smbclient exit status $ERRORLEVEL - See $TMPFILE for details"
+   exit $ERRORLEVEL
+fi
+
+# Check the output for a failure...
+NTERR=`cat $TMPFILE | grep "^NT_STATUS"`
+if [ ! -z "$NTERR" ] ; then
+   # Looks like there was a error on the smbclient command.
+   # Report and abort further actions.
+   echo "Error: $NTERR" 
+   exit 1
+fi
